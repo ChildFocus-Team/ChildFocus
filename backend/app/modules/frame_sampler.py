@@ -2,20 +2,13 @@
 ChildFocus - Frame Sampling Module
 backend/app/modules/frame_sampler.py
 
-Speed targets vs previous version:
-  Download : 19.6s → ~8-12s  (audio-only stream for ATT, video-only for frames)
-  Analysis : 18.5s → ~6-10s  (parallel audio decode, smaller frame ops)
-  Total    : 38.3s → ~15-22s
-
-Key changes:
-  1. SPLIT DOWNLOAD  → download audio-only + video-only in parallel (yt-dlp)
-                       audio stream is tiny (~200-400KB for 20s), downloads in <2s
-  2. ATT FIRST       → start audio decode immediately after audio download, 
-                       overlaps with video frame extraction
-  3. MONO RESAMPLE   → librosa sr=8000 instead of 22050 (4x fewer samples, same onset result)
-  4. FRAME BATCH     → extract all 3 segments from one VideoCapture pass (no re-open)
-  5. THUMBNAIL ASYNC → already concurrent, kept
-  6. CACHE VIDEO     → skip re-download if same video_id requested within session
+Optimizations:
+  1. fetch_video()        → validate + download in ONE yt-dlp call (saves ~8-15s)
+  2. ThreadPoolExecutor   → S1, S2, S3, thumbnail all run concurrently (saves ~10-20s)
+  3. librosa direct read  → no ffmpeg subprocess per segment (saves ~3-6s)
+  4. Frame resize 320px   → faster numpy ops on smaller frames
+  5. Runtime timer        → printed on completion + returned in response
+  6. Short video fix      → segments deduplicated for videos < 20s (e.g. Shorts)
 """
 
 import os
@@ -27,7 +20,6 @@ import tempfile
 import subprocess
 import requests
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from functools import lru_cache
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -54,20 +46,16 @@ except ImportError:
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 SEGMENT_DURATION  = 20
+FRAME_SAMPLE_RATE = 1
 C_MAX             = 4.0
 S_MAX             = 128.0
-FRAME_WIDTH       = 240        # ↓ from 320 → faster numpy ops, negligible quality loss
-DIFF_THRESH       = 25
-ATT_SR            = 8000       # ↓ from 22050 → 4x faster librosa load, same onset accuracy
-ATT_NORM          = 10.0
+FRAME_WIDTH       = 320
 NODE_PATH         = r"C:\Program Files\nodejs\node.exe"
 
-W_FCR, W_CSV, W_ATT, W_THUMB = 0.35, 0.25, 0.20, 0.20
 
-
-# ── yt-dlp base options ────────────────────────────────────────────────────────
-def _base_opts() -> dict:
-    return {
+# ── yt-dlp shared options ──────────────────────────────────────────────────────
+def _ydl_opts(extra: dict = None) -> dict:
+    opts = {
         "quiet":              True,
         "no_warnings":        True,
         "noprogress":         True,
@@ -89,266 +77,179 @@ def _base_opts() -> dict:
             "Accept-Language": "en-US,en;q=0.9",
         },
     }
+    if extra:
+        opts.update(extra)
+    return opts
 
 
-# ── Download: video-only stream (no audio = much smaller file) ─────────────────
-def _download_video_only(video_id: str, out_path: str, max_duration: int = 90) -> dict:
+# ── Step 0+1 combined: validate AND download in one yt-dlp call ───────────────
+def fetch_video(video_id: str, max_duration: int = 90) -> dict:
     """
-    Downloads the lowest-quality video-only stream.
-    No audio track = file is ~3-5x smaller → faster download.
-    Audio fetched separately via _download_audio_only().
+    Single yt-dlp call — validates availability AND downloads.
+    Previous version made two separate calls (validate then download) = wasted ~8-15s.
     """
-    urls = [
+    if not YTDLP_AVAILABLE:
+        return {"ok": False, "reason": "yt-dlp not installed"}
+
+    output_path = tempfile.mktemp(suffix=".mp4")
+
+    urls_to_try = [
         f"https://www.youtube.com/watch?v={video_id}",
         f"https://www.youtube.com/shorts/{video_id}",
     ]
-    last_err = None
-    for url in urls:
+
+    last_error = None
+    for url in urls_to_try:
         try:
-            opts = _base_opts()
-            opts.update({
-                # video-only: no audio mux, smallest resolution
-                "format":            "worstvideo[ext=mp4]/worstvideo/worst[ext=mp4]/worst",
-                "outtmpl":           out_path,
+            opts = _ydl_opts({
+                "format":            "worst[ext=mp4]/worst",
+                "outtmpl":           output_path,
                 "download_sections": [f"*0-{max_duration}"],
                 "postprocessors":    [],
             })
             with yt_dlp.YoutubeDL(opts) as ydl:
                 info = ydl.extract_info(url, download=True)
-            if os.path.exists(out_path):
-                return {
-                    "ok":       True,
-                    "title":    info.get("title", "Unknown"),
-                    "duration": info.get("duration", 0),
-                    "uploader": info.get("uploader", "Unknown"),
-                }
+
+            if not os.path.exists(output_path):
+                raise FileNotFoundError("Downloaded file missing")
+
+            return {
+                "ok":       True,
+                "path":     output_path,
+                "title":    info.get("title",    "Unknown"),
+                "duration": info.get("duration", 0),
+                "uploader": info.get("uploader", "Unknown"),
+            }
         except Exception as e:
-            last_err = e
-            _safe_remove(out_path)
+            last_error = e
+            if os.path.exists(output_path):
+                try: os.remove(output_path)
+                except Exception: pass
             continue
 
-    return {"ok": False, "reason": _classify_error(last_err)}
+    msg = str(last_error).lower()
+    if "not available" in msg:
+        reason = "Video is not available in this region or has been removed"
+    elif "private" in msg:
+        reason = "Video is private"
+    elif "age" in msg:
+        reason = "Video is age-restricted"
+    else:
+        reason = str(last_error)
+    return {"ok": False, "reason": reason}
 
 
-# ── Download: audio-only stream (tiny file, fast) ─────────────────────────────
-def _download_audio_only(video_id: str, out_path: str, max_duration: int = 90) -> bool:
-    """
-    Downloads the lowest-quality audio-only stream (m4a/webm/opus).
-    Robust format chain covers videos where worstaudio is unavailable.
-    Used exclusively for ATT computation.
-    """
-    urls = [
-        f"https://www.youtube.com/watch?v={video_id}",
-        f"https://www.youtube.com/shorts/{video_id}",
-    ]
-
-    # Use a stem path so yt-dlp can append whatever extension it needs
-    out_stem = out_path.replace(".m4a", "")
-
-    for url in urls:
-        try:
-            opts = _base_opts()
-            opts.update({
-                # Robust audio format chain:
-                # 1. worstaudio[ext=m4a]  → smallest m4a audio stream
-                # 2. worstaudio           → any smallest audio stream
-                # 3. bestaudio[ext=m4a]  → fallback to best m4a if worst unavailable
-                # 4. bestaudio           → any audio stream (last resort)
-                # 5. worst               → full muxed video as last fallback (still faster than best)
-                "format":            "worstaudio[ext=m4a]/worstaudio/bestaudio[ext=m4a]/bestaudio/worst",
-                "outtmpl":           out_stem + ".%(ext)s",   # let yt-dlp pick extension
-                "download_sections": [f"*0-{max_duration}"],
-                "postprocessors":    [],
-            })
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                ydl.extract_info(url, download=True)
-
-            # Find the file yt-dlp actually wrote (any audio extension)
-            for ext in ["m4a", "webm", "opus", "mp3", "ogg", "mp4"]:
-                candidate = f"{out_stem}.{ext}"
-                if os.path.exists(candidate) and os.path.getsize(candidate) > 500:
-                    if candidate != out_path:
-                        os.replace(candidate, out_path)
-                    return True
-
-        except Exception as e:
-            print(f"[AUDIO-DL] {url} failed: {e}")
-            continue
-
-    return False
-
-
-# ── Parallel fetch: video + audio simultaneously ───────────────────────────────
-def fetch_video(video_id: str, max_duration: int = 90) -> dict:
-    """
-    Downloads video-only and audio-only streams IN PARALLEL.
-
-    Previous version: single combined stream (video+audio muxed) = large file.
-    New version:
-      - video-only stream  → used for FCR + CSV (frames)
-      - audio-only stream  → used for ATT (tiny, downloads in <2s)
-    Both downloads run concurrently via ThreadPoolExecutor.
-
-    Result: download phase goes from ~19s → ~8-12s.
-    """
-    if not YTDLP_AVAILABLE:
-        return {"ok": False, "reason": "yt-dlp not installed"}
-
-    video_path = tempfile.mktemp(suffix=".mp4")
-    audio_path = tempfile.mktemp(suffix=".m4a")
-
-    def _dl_video():
-        return _download_video_only(video_id, video_path, max_duration)
-
-    def _dl_audio():
-        return _download_audio_only(video_id, audio_path, max_duration)
-
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        f_video = pool.submit(_dl_video)
-        f_audio = pool.submit(_dl_audio)
-        video_result = f_video.result()
-        audio_ok     = f_audio.result()
-
-    if not video_result["ok"]:
-        _safe_remove(audio_path)
-        return {**video_result, "video_path": None, "audio_path": None}
-
-    return {
-        "ok":         True,
-        "video_path": video_path,
-        "audio_path": audio_path if audio_ok else None,
-        "title":      video_result["title"],
-        "duration":   video_result["duration"],
-        "uploader":   video_result["uploader"],
-    }
-
-
-# ── Frame extraction — single VideoCapture, all segments ──────────────────────
-def extract_all_segments(
-    video_path: str, seg_starts: list, seg_dur: int
-) -> dict:
-    """
-    Opens VideoCapture ONCE and extracts frames for all segments in one pass.
-    Previous version: each _process_segment() opened its own VideoCapture.
-    New version: one open → seek → read per segment → close.
-    Saves ~0.5-1s of repeated open/close overhead.
-
-    Returns: {seg_id: [frames]}
-    """
+# ── Frame extraction (resized for speed) ──────────────────────────────────────
+def extract_frames(video_path: str, start_sec: int, duration: int) -> list:
+    """1fps frames resized to 320px wide — faster downstream numpy ops."""
     cap = cv2.VideoCapture(video_path)
     if not cap.isOpened():
-        return {sid: [] for sid, _ in seg_starts}
+        return []
 
-    fps          = cap.get(cv2.CAP_PROP_FPS) or 30.0
+    fps          = cap.get(cv2.CAP_PROP_FPS) or 30
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    step         = max(1, int(fps))
+    end_frame    = int(min((start_sec + duration) * fps, total_frames))
+    start_frame  = int(start_sec * fps)
+    step         = max(1, int(fps * FRAME_SAMPLE_RATE))
 
-    result = {}
-    for seg_id, start_sec in seg_starts:
-        start_frame = int(start_sec * fps)
-        end_frame   = int(min((start_sec + seg_dur) * fps, total_frames))
-        frames      = []
-        idx         = start_frame
-        while idx < end_frame:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-            ret, frame = cap.read()
-            if not ret:
-                break
-            h, w  = frame.shape[:2]
-            frame = cv2.resize(
-                frame, (FRAME_WIDTH, int(h * FRAME_WIDTH / w)),
-                interpolation=cv2.INTER_LINEAR,
-            )
-            frames.append(frame)
-            idx += step
-        result[seg_id] = frames
+    frames = []
+    idx = start_frame
+    while idx < end_frame:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+        ret, frame = cap.read()
+        if not ret:
+            break
+        h, w = frame.shape[:2]
+        frame = cv2.resize(frame, (FRAME_WIDTH, int(h * FRAME_WIDTH / w)),
+                           interpolation=cv2.INTER_LINEAR)
+        frames.append(frame)
+        idx += step
 
     cap.release()
-    return result
+    return frames
 
 
 # ── FCR ───────────────────────────────────────────────────────────────────────
 def compute_fcr(frames: list) -> float:
-    n = len(frames)
-    if n < 2:
+    if len(frames) < 2:
         return 0.0
-    grays = [cv2.cvtColor(f, cv2.COLOR_BGR2GRAY) for f in frames]
-    cuts  = sum(
-        1 for i in range(1, n)
-        if np.mean(cv2.absdiff(grays[i - 1], grays[i])) > DIFF_THRESH
-    )
-    return round(float(np.clip(cuts / max(n - 1, 1) / C_MAX, 0.0, 1.0)), 4)
+    cuts = 0
+    prev = cv2.cvtColor(frames[0], cv2.COLOR_BGR2GRAY)
+    for f in frames[1:]:
+        gray = cv2.cvtColor(f, cv2.COLOR_BGR2GRAY)
+        if np.mean(cv2.absdiff(prev, gray)) > 25:
+            cuts += 1
+        prev = gray
+    return round(min(1.0, (cuts / max(len(frames), 1)) / C_MAX), 4)
 
 
 # ── CSV ───────────────────────────────────────────────────────────────────────
 def compute_csv(frames: list) -> float:
     if not frames:
         return 0.0
-    sat_means = np.array([
-        np.mean(cv2.cvtColor(f, cv2.COLOR_BGR2HSV)[:, :, 1])
-        for f in frames
-    ], dtype=np.float32)
-    return round(float(np.clip(np.std(sat_means) / S_MAX, 0.0, 1.0)), 4)
+    sats = [np.mean(cv2.cvtColor(f, cv2.COLOR_BGR2HSV)[:, :, 1]) for f in frames]
+    return round(min(1.0, float(np.std(sats)) / S_MAX), 4)
 
 
-# ── ATT — uses dedicated audio file if available ──────────────────────────────
-def compute_att(audio_source: str, start_sec: int, duration: int) -> float:
+# ── ATT ───────────────────────────────────────────────────────────────────────
+def compute_att(video_path: str, start_sec: int, duration: int) -> float:
     """
-    ATT from dedicated audio-only file (fast) or video file (fallback).
-    sr=8000 instead of 22050 → 4x fewer samples, onset_strength is robust at 8kHz.
+    Fast path: librosa reads directly from MP4 — no ffmpeg subprocess.
+    Fallback: ffmpeg WAV extraction if direct read fails.
     """
-    if not audio_source or not os.path.exists(audio_source):
-        return 0.0
-
     if LIBROSA_AVAILABLE:
         try:
             y, sr = librosa.load(
-                audio_source,
+                video_path,
                 offset=float(start_sec),
                 duration=float(duration),
-                sr=ATT_SR,              # 8000 Hz — 4x faster than 22050
+                sr=22050,
                 mono=True,
-                res_type="kaiser_fast",
             )
-            if len(y) > 50:
-                strength = librosa.onset.onset_strength(y=y, sr=sr)
-                return round(float(np.clip(np.mean(strength) / ATT_NORM, 0.0, 1.0)), 4)
-        except Exception as e:
-            print(f"[ATT] librosa error: {e}")
+            if len(y) > 100:
+                return round(min(1.0, float(np.mean(
+                    librosa.onset.onset_strength(y=y, sr=sr)
+                )) / 10.0), 4)
+        except Exception:
+            pass
 
-    # RMS fallback
-    return _att_rms_fallback(audio_source, start_sec, duration)
-
-
-def _att_rms_fallback(audio_path: str, start_sec: int, duration: int) -> float:
+    # Fallback: ffmpeg WAV
     wav_path = tempfile.mktemp(suffix=".wav")
     try:
         r = subprocess.run(
             ["ffmpeg", "-y", "-ss", str(start_sec), "-t", str(duration),
-             "-i", audio_path, "-vn", "-acodec", "pcm_s16le",
-             "-ar", "8000", "-ac", "1", wav_path],
-            capture_output=True, timeout=15,
+             "-i", video_path, "-vn", "-acodec", "pcm_s16le",
+             "-ar", "22050", "-ac", "1", wav_path],
+            capture_output=True, timeout=30,
         )
-        if r.returncode != 0 or not _valid_file(wav_path):
-            return 0.0
-        import wave
-        with wave.open(wav_path, "rb") as wf:
-            samples = np.frombuffer(wf.readframes(wf.getnframes()), dtype=np.int16
-                                    ).astype(np.float32) / 32768.0
-        chunk = 800  # ~0.1s at 8kHz
-        if len(samples) < chunk:
-            return 0.0
-        rms = [float(np.sqrt(np.mean(samples[i:i+chunk]**2)))
-               for i in range(0, len(samples) - chunk, chunk)]
-        return round(float(np.clip(float(np.std(rms)) * 10.0, 0.0, 1.0)), 4)
-    except Exception:
-        return 0.0
+        if r.returncode == 0 and os.path.exists(wav_path) and os.path.getsize(wav_path) > 500:
+            if LIBROSA_AVAILABLE:
+                y, sr = librosa.load(wav_path, sr=None, mono=True)
+                if len(y) > 100:
+                    return round(min(1.0, float(np.mean(
+                        librosa.onset.onset_strength(y=y, sr=sr)
+                    )) / 10.0), 4)
+            import wave
+            with wave.open(wav_path, "rb") as wf:
+                samples = np.frombuffer(
+                    wf.readframes(wf.getnframes()), dtype=np.int16
+                ).astype(np.float32) / 32768.0
+            if len(samples) > 100:
+                chunk = 2205
+                rms = [float(np.sqrt(np.mean(samples[i:i+chunk]**2)))
+                       for i in range(0, len(samples) - chunk, chunk)]
+                if rms:
+                    return round(min(1.0, float(np.std(rms)) * 10.0), 4)
+    except Exception as e:
+        print(f"[ATT] Fallback error: {e}")
     finally:
-        _safe_remove(wav_path)
+        if os.path.exists(wav_path):
+            try: os.remove(wav_path)
+            except Exception: pass
+    return 0.0
 
 
 # ── Thumbnail ─────────────────────────────────────────────────────────────────
-@lru_cache(maxsize=256)
 def compute_thumbnail_intensity(url: str) -> float:
     if not url:
         return 0.0
@@ -360,32 +261,31 @@ def compute_thumbnail_intensity(url: str) -> float:
                else cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_COLOR))
         if img is None:
             return 0.0
-        hsv      = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-        mean_sat = float(np.mean(hsv[:, :, 1])) / 255.0
+        mean_sat = float(np.mean(cv2.cvtColor(img, cv2.COLOR_BGR2HSV)[:, :, 1])) / 255.0
         gray     = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-        edge_den = float(np.count_nonzero(cv2.Canny(gray, 100, 200))) / float(gray.size)
-        return round(float(np.clip(0.7 * mean_sat + 0.3 * edge_den, 0.0, 1.0)), 4)
+        edge_den = float(np.sum(cv2.Canny(gray, 100, 200) > 0)) / float(gray.size)
+        return round(min(1.0, 0.7 * mean_sat + 0.3 * edge_den), 4)
     except Exception as e:
         print(f"[THUMB] {e}")
         return 0.0
 
 
-# ── Process one segment (ATT from audio file) ─────────────────────────────────
+# ── Process one segment (runs concurrently with other segments) ───────────────
 def _process_segment(
-    frames: list, seg_id: str, start: int,
-    seg_dur: int, audio_path: str
+    video_path: str, seg_id: str, start: int, seg_dur: int = SEGMENT_DURATION
 ) -> dict:
     t       = time.time()
+    frames  = extract_frames(video_path, start, seg_dur)
     fcr     = compute_fcr(frames)
-    csv_val = compute_csv(frames)
-    att     = compute_att(audio_path, start, seg_dur)
-    score_h = round(W_FCR * fcr + W_CSV * csv_val + W_ATT * att, 4)
-    print(f"[SAMPLER] {seg_id} FCR={fcr} | CSV={csv_val} | ATT={att} | H={score_h} ({time.time()-t:.1f}s)")
+    csv     = compute_csv(frames)
+    att     = compute_att(video_path, start, seg_dur)
+    score_h = round(0.35 * fcr + 0.25 * csv + 0.20 * att, 4)
+    print(f"[SAMPLER] {seg_id} FCR={fcr} | CSV={csv} | ATT={att} | H={score_h} ({time.time()-t:.1f}s)")
     return {
         "segment_id":     seg_id,
         "offset_seconds": start,
         "length_seconds": seg_dur,
-        "fcr": fcr, "csv": csv_val, "att": att, "score_h": score_h,
+        "fcr": fcr, "csv": csv, "att": att, "score_h": score_h,
     }
 
 
@@ -393,13 +293,12 @@ def _process_segment(
 def sample_video(video_id: str, thumbnail_url: str = "") -> dict:
     t_start    = time.time()
     video_path = None
-    audio_path = None
 
     try:
         print(f"\n[SAMPLER] ══════════════════════════════════════")
         print(f"[SAMPLER] Analyzing: {video_id}")
 
-        # Step 1: Parallel download (video-only + audio-only)
+        # Step 1: Fetch (validate + download — one yt-dlp call)
         t0     = time.time()
         result = fetch_video(video_id, max_duration=90)
         print(f"[SAMPLER] Download: {time.time()-t0:.1f}s")
@@ -412,23 +311,29 @@ def sample_video(video_id: str, thumbnail_url: str = "") -> dict:
                 "message":  f"Video cannot be analyzed: {result['reason']}",
             }
 
-        video_path = result["video_path"]
-        audio_path = result.get("audio_path")
-
+        video_path     = result["path"]
         cap            = cv2.VideoCapture(video_path)
         video_duration = cap.get(cv2.CAP_PROP_FRAME_COUNT) / (cap.get(cv2.CAP_PROP_FPS) or 30)
         cap.release()
         print(f"[SAMPLER] ✓ '{result['title']}' ({video_duration:.1f}s)")
 
-        # Step 2: Segment start times
+        # Step 2: Segment starts — short video safe
         actual_dur = min(video_duration, 90)
+
         if actual_dur <= SEGMENT_DURATION:
+            # Video shorter than one segment (e.g. Shorts < 20s)
             effective_seg_dur = max(1, int(actual_dur))
-            seg_starts = [("S1", 0), ("S2", 0), ("S3", 0)]
+            seg_starts = [
+                ("S1", 0),
+                ("S2", 0),
+                ("S3", 0),
+            ]
         else:
             effective_seg_dur = SEGMENT_DURATION
             mid = max(0, int(actual_dur / 2) - effective_seg_dur // 2)
             end = max(0, int(actual_dur) - effective_seg_dur)
+
+            # Deduplicate segment starts
             seen = []
             for v in [0, mid, end]:
                 if v not in seen:
@@ -439,21 +344,14 @@ def sample_video(video_id: str, thumbnail_url: str = "") -> dict:
 
         print(f"[SAMPLER] Segments: {[(s, o) for s, o in seg_starts]} | seg_dur={effective_seg_dur}s")
 
-        # Step 3: Extract ALL frames in one VideoCapture pass
-        t0          = time.time()
-        all_frames  = extract_all_segments(video_path, seg_starts, effective_seg_dur)
-
-        # Step 4: Run segment scoring + thumbnail concurrently
+        # Step 3: All 3 segments + thumbnail concurrently
+        t0       = time.time()
         segments = [None, None, None]
         thumb    = 0.0
 
         with ThreadPoolExecutor(max_workers=4) as pool:
             futures = {
-                pool.submit(
-                    _process_segment,
-                    all_frames[sid], sid, start,
-                    effective_seg_dur, audio_path
-                ): i
+                pool.submit(_process_segment, video_path, sid, start, effective_seg_dur): i
                 for i, (sid, start) in enumerate(seg_starts)
             }
             futures[pool.submit(compute_thumbnail_intensity, thumbnail_url)] = "thumb"
@@ -468,12 +366,12 @@ def sample_video(video_id: str, thumbnail_url: str = "") -> dict:
 
         print(f"[SAMPLER] Analysis: {time.time()-t0:.1f}s")
 
-        # Step 5: Aggregate
+        # Step 4: OIR score
         max_seg   = max(s["score_h"] for s in segments)
         agg_score = round(0.80 * max_seg + 0.20 * thumb, 4)
-        label = ("Overstimulating" if agg_score >= 0.75
-             else "Educational" if agg_score <= 0.35
-            else "Neutral")
+        label     = ("Overstimulating" if agg_score >= 0.75
+                     else "Safe"       if agg_score <= 0.35
+                     else "Uncertain")
 
         total = time.time() - t_start
         print(f"[SAMPLER] ✓ Score: {agg_score} → {label}")
@@ -498,26 +396,6 @@ def sample_video(video_id: str, thumbnail_url: str = "") -> dict:
         import traceback; traceback.print_exc()
         return {"video_id": video_id, "status": "error", "message": str(e)}
     finally:
-        _safe_remove(video_path)
-        _safe_remove(audio_path)
-
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-def _valid_file(path: str, min_bytes: int = 500) -> bool:
-    return bool(path and os.path.exists(path) and os.path.getsize(path) > min_bytes)
-
-def _safe_remove(path: str) -> None:
-    try:
-        if path and os.path.exists(path):
-            os.remove(path)
-    except Exception:
-        pass
-
-def _classify_error(err: Exception) -> str:
-    if err is None:
-        return "Unknown error"
-    msg = str(err).lower()
-    if "not available" in msg: return "Video is not available in this region or has been removed"
-    if "private"       in msg: return "Video is private"
-    if "age"           in msg: return "Video is age-restricted"
-    return str(err)
+        if video_path and os.path.exists(video_path):
+            try: os.remove(video_path)
+            except Exception: pass
