@@ -34,3 +34,7 @@ Thumbs.db
 .vscode/
 .idea/backend/app/models/*.pkl
 ml_training/outputs/*.pkl
+
+echo logs/ >> .gitignore
+echo .idea/ >> .gitignore
+echo requirements_old2.txt >> .gitignore

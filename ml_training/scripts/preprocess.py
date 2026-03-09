@@ -1,165 +1,122 @@
 """
-ChildFocus — Preprocessing Script
+ChildFocus - Data Preprocessing Script
 ml_training/scripts/preprocess.py
 
-What this does:
-  1. Reads metadata_raw.csv (500 rows, no labels)
-  2. Auto-labels each row based on the query_used column
-  3. Cleans and combines title + description + tags into one text field
-  4. Saves metadata_labeled.csv to data/processed/
-  5. Saves vectorizer.pkl to ../../backend/app/models/
+Steps:
+  1. Auto-label rows by query_used (query-based heuristic labeling)
+  2. Clean and combine text fields (title + tags + description)
+  3. Remove stop words, URLs, special characters
+  4. Save labeled + cleaned CSV → data/processed/metadata_clean.csv
 
-Run from: ml_training/scripts/
-Command:   py preprocess.py
+Run:
+    python preprocess.py
 """
 
 import os
 import re
 import csv
-import pickle
 
-print("[PREPROCESS] ══════════════════════════════════════")
-print("[PREPROCESS] ChildFocus — Data Preprocessing")
-print("[PREPROCESS] ══════════════════════════════════════")
+# ── Paths ──────────────────────────────────────────────────────────────────────
+RAW_PATH       = "data/raw/metadata_raw.csv"
+PROCESSED_DIR  = "data/processed"
+PROCESSED_PATH = "data/processed/metadata_clean.csv"
 
-# ── Try importing required packages ──────────────────────────────────────────
-try:
-    import pandas as pd
-    print("[PREPROCESS] ✓ pandas loaded")
-except ImportError:
-    print("[PREPROCESS] ✗ pandas not found. Run: pip install pandas")
-    exit(1)
-
-try:
-    from sklearn.feature_extraction.text import TfidfVectorizer
-    print("[PREPROCESS] ✓ scikit-learn loaded")
-except ImportError:
-    print("[PREPROCESS] ✗ scikit-learn not found. Run: pip install scikit-learn")
-    exit(1)
-
-# ── Paths (relative to ml_training/scripts/) ─────────────────────────────────
-SCRIPT_DIR   = os.path.dirname(os.path.abspath(__file__))
-RAW_CSV      = os.path.join(SCRIPT_DIR, "data", "raw", "metadata_raw.csv")
-PROCESSED_DIR = os.path.join(SCRIPT_DIR, "data", "processed")
-LABELED_CSV  = os.path.join(PROCESSED_DIR, "metadata_labeled.csv")
-MODELS_DIR   = os.path.join(SCRIPT_DIR, "..", "..", "backend", "app", "models")
-VEC_PATH     = os.path.join(MODELS_DIR, "vectorizer.pkl")
-
-print(f"\n[PREPROCESS] Input  → {RAW_CSV}")
-print(f"[PREPROCESS] Output → {LABELED_CSV}")
-print(f"[PREPROCESS] Model  → {VEC_PATH}")
-
-# ── Check input file exists ───────────────────────────────────────────────────
-if not os.path.exists(RAW_CSV):
-    print(f"\n[PREPROCESS] ✗ ERROR: Raw CSV not found at:")
-    print(f"             {RAW_CSV}")
-    print(f"\n  Expected folder: ml_training/scripts/data/raw/metadata_raw.csv")
-    print(f"  Check your file is in the right place and try again.")
-    exit(1)
-
-# ── Label mapping from query_used → OIR label ────────────────────────────────
-# Based on thesis: educational queries → Educational,
-#                  neutral queries     → Neutral,
-#                  overstimulating queries → Overstimulating
-
-LABEL_MAP = {
-    "kids educational videos":         "Educational",
-    "kids science experiments":        "Educational",
-    "kids yoga and exercise":          "Educational",
-    "children cartoon episodes":       "Educational",
-    "nursery rhymes for toddlers":     "Educational",
-    "children's music videos":         "Neutral",
-    "animated stories for kids":       "Neutral",
-    "baby sensory videos":             "Neutral",
-    "kids fast cartoon compilation":   "Overstimulating",
-    "surprise eggs unboxing kids":     "Overstimulating",
+# ── Query → Label mapping ──────────────────────────────────────────────────────
+# Based on collect_metadata.py search queries.
+# Overstimulating queries are those known to produce fast-paced/high-stimulus content.
+QUERY_LABEL_MAP = {
+    "kids fast cartoon compilation":  "Overstimulating",
+    "surprise eggs unboxing kids":    "Overstimulating",
+    "kids educational videos":        "Educational",
+    "kids science experiments":       "Educational",
+    "kids yoga and exercise":         "Educational",
+    "children cartoon episodes":      "Neutral",
+    "nursery rhymes for toddlers":    "Neutral",
+    "children's music videos":        "Neutral",
+    "animated stories for kids":      "Neutral",
+    "baby sensory videos":            "Neutral",
 }
 
-def auto_label(query: str) -> str:
-    """Map query_used to OIR label. Defaults to Neutral if unknown."""
-    q = str(query).strip().lower()
-    for key, label in LABEL_MAP.items():
-        if key.lower() in q or q in key.lower():
-            return label
-    # Fallback: try keyword matching
-    if any(w in q for w in ["educational", "science", "learn", "abc", "phonics", "yoga"]):
-        return "Educational"
-    if any(w in q for w in ["fast", "unboxing", "surprise", "compilation", "sensory"]):
-        return "Overstimulating"
-    return "Neutral"
+# ── Stop words ─────────────────────────────────────────────────────────────────
+STOP_WORDS = {
+    "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for",
+    "of", "with", "by", "from", "is", "it", "this", "that", "was", "are",
+    "be", "as", "so", "we", "he", "she", "they", "you", "i", "my", "your",
+    "his", "her", "its", "our", "their", "what", "which", "who", "will",
+    "would", "could", "should", "has", "have", "had", "do", "does", "did",
+    "not", "no", "if", "then", "than", "when", "where", "how", "all",
+    "each", "more", "also", "just", "can", "up", "out", "about", "into",
+    "too", "very", "s", "t", "re", "ve", "ll", "d",
+}
 
-def clean_text(text: str) -> str:
-    """Normalize text for TF-IDF. Must match naive_bayes.py exactly."""
-    text = str(text).lower()
-    text = re.sub(r"http\S+|www\S+", " ", text)      # remove URLs
-    text = re.sub(r"[^a-z0-9\s]", " ", text)          # keep letters/numbers
-    text = re.sub(r"\s+", " ", text).strip()           # collapse whitespace
-    return text
 
-# ── Load CSV ──────────────────────────────────────────────────────────────────
-print(f"\n[PREPROCESS] Loading CSV...")
-df = pd.read_csv(RAW_CSV, encoding="utf-8")
-print(f"[PREPROCESS] ✓ Loaded {len(df)} rows, columns: {list(df.columns)}")
+def assign_label(query: str, existing_label: str) -> str:
+    """
+    Returns label from existing data if set, else maps from query_used.
+    Falls back to 'Neutral' if query not in map.
+    """
+    if existing_label and existing_label.strip():
+        return existing_label.strip()
+    query_clean = query.strip().lower()
+    return QUERY_LABEL_MAP.get(query_clean, "Neutral")
 
-# ── Auto-label ────────────────────────────────────────────────────────────────
-print(f"\n[PREPROCESS] Auto-labeling by query_used...")
 
-if "query_used" not in df.columns:
-    print("[PREPROCESS] ✗ ERROR: 'query_used' column not found in CSV.")
-    print(f"             Found columns: {list(df.columns)}")
-    exit(1)
+def clean_text(title: str, description: str) -> str:
+    """
+    Combine and clean title + description for TF-IDF.
+    Title weighted 3x (more signal-dense than description).
+    """
+    title_part = f"{title} " * 3
+    desc_part  = description[:300] if description else ""
+    raw        = f"{title_part}{desc_part}".lower()
 
-df["label"] = df["query_used"].apply(auto_label)
+    # Remove URLs
+    raw = re.sub(r"https?://\S+|www\.\S+", " ", raw)
+    # Remove non-alpha characters
+    raw = re.sub(r"[^a-z\s]", " ", raw)
+    # Tokenize + remove stop words
+    tokens = [t for t in raw.split() if t not in STOP_WORDS and len(t) > 1]
+    return " ".join(tokens)
 
-label_counts = df["label"].value_counts()
-print(f"[PREPROCESS] Label distribution:")
-for label, count in label_counts.items():
-    print(f"             {label:20s} → {count} rows")
 
-# ── Build combined text column ────────────────────────────────────────────────
-print(f"\n[PREPROCESS] Building combined text (title + description)...")
+def preprocess():
+    os.makedirs(PROCESSED_DIR, exist_ok=True)
 
-df["title"]       = df["title"].fillna("").astype(str)
-df["description"] = df["description"].fillna("").astype(str)
+    with open(RAW_PATH, encoding="utf-8") as f:
+        rows = list(csv.DictReader(f))
 
-# Combine title + description (tags not in CSV from collect_metadata.py)
-df["text_combined"] = (df["title"] + " " + df["description"]).apply(clean_text)
+    print(f"[PREPROCESS] Loaded {len(rows)} rows from {RAW_PATH}")
 
-# Drop rows with empty text
-before = len(df)
-df = df[df["text_combined"].str.strip().str.len() > 5].reset_index(drop=True)
-after = len(df)
-if before != after:
-    print(f"[PREPROCESS] ⚠ Dropped {before - after} rows with empty text")
-print(f"[PREPROCESS] ✓ {after} rows ready for training")
+    processed = []
+    label_counts = {"Educational": 0, "Neutral": 0, "Overstimulating": 0, "unknown": 0}
 
-# ── Save labeled CSV ──────────────────────────────────────────────────────────
-os.makedirs(PROCESSED_DIR, exist_ok=True)
-df.to_csv(LABELED_CSV, index=False, encoding="utf-8")
-print(f"\n[PREPROCESS] ✓ Labeled CSV saved → {LABELED_CSV}")
+    for row in rows:
+        label     = assign_label(row.get("query_used", ""), row.get("label", ""))
+        text      = clean_text(row.get("title", ""), row.get("description", ""))
 
-# ── Fit TF-IDF Vectorizer ─────────────────────────────────────────────────────
-print(f"\n[PREPROCESS] Fitting TF-IDF vectorizer...")
+        if not text.strip():
+            continue   # skip rows with no usable text
 
-vectorizer = TfidfVectorizer(
-    max_features  = 5000,
-    ngram_range   = (1, 2),    # unigrams + bigrams
-    min_df        = 2,         # ignore terms appearing in < 2 docs
-    sublinear_tf  = True,      # apply log normalization
-    strip_accents = "unicode",
-)
+        label_counts[label] = label_counts.get(label, 0) + 1
+        processed.append({
+            "video_id": row.get("video_id", ""),
+            "text":     text,
+            "label":    label,
+            "title":    row.get("title", ""),
+        })
 
-X = vectorizer.fit_transform(df["text_combined"])
-print(f"[PREPROCESS] ✓ Vectorizer fitted")
-print(f"             Feature matrix: {X.shape[0]} samples × {X.shape[1]} features")
-print(f"             Vocabulary size: {len(vectorizer.vocabulary_)} terms")
+    # Write processed CSV
+    with open(PROCESSED_PATH, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=["video_id", "text", "label", "title"])
+        writer.writeheader()
+        writer.writerows(processed)
 
-# ── Save vectorizer ───────────────────────────────────────────────────────────
-os.makedirs(MODELS_DIR, exist_ok=True)
-with open(VEC_PATH, "wb") as f:
-    pickle.dump(vectorizer, f)
-print(f"[PREPROCESS] ✓ vectorizer.pkl saved → {VEC_PATH}")
+    print(f"[PREPROCESS] ✓ {len(processed)} rows saved → {PROCESSED_PATH}")
+    print(f"[PREPROCESS] Label distribution:")
+    for label, count in label_counts.items():
+        if count > 0:
+            print(f"             {label}: {count} ({count/len(processed)*100:.1f}%)")
 
-print(f"\n[PREPROCESS] ══════════════════════════════════════")
-print(f"[PREPROCESS] DONE. Now run: py train_nb.py")
-print(f"[PREPROCESS] ══════════════════════════════════════\n")
+
+if __name__ == "__main__":
+    preprocess()

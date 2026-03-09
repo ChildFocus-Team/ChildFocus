@@ -49,3 +49,35 @@
 [2026-03-07 05:27:56,212] INFO  * Debugger PIN: 122-255-992
 [2026-03-07 05:29:27,821] INFO CLASSIFY [FULL] video_id=pkD3Q2bpsqs label=Educational
 [2026-03-07 05:29:27,822] INFO 127.0.0.1 - - [07/Mar/2026 05:29:27] "POST /classify_full HTTP/1.1" 200 -
+[2026-03-09 12:45:38,078] INFO [31m[1mWARNING: This is a development server. Do not use it in a production deployment. Use a production WSGI server instead.[0m
+ * Running on all addresses (0.0.0.0)
+ * Running on http://127.0.0.1:5000
+ * Running on http://192.168.100.136:5000
+[2026-03-09 12:45:38,078] INFO [33mPress CTRL+C to quit[0m
+[2026-03-09 12:45:38,080] INFO  * Restarting with stat
+[2026-03-09 12:45:38,779] WARNING  * Debugger is active!
+[2026-03-09 12:45:38,783] INFO  * Debugger PIN: 846-696-707
+[2026-03-09 12:46:12,794] INFO CLASSIFY [FAST] video_id=dQw4w9WgXcQ label=Educational
+[2026-03-09 12:46:12,795] INFO 127.0.0.1 - - [09/Mar/2026 12:46:12] "POST /classify_fast HTTP/1.1" 200 -
+[2026-03-09 12:46:31,402] INFO CLASSIFY [FAST] video_id=dQw4w9WgXcQ label=Educational
+[2026-03-09 12:46:31,403] INFO 127.0.0.1 - - [09/Mar/2026 12:46:31] "POST /classify_fast HTTP/1.1" 200 -
+[2026-03-09 13:47:11,565] INFO  * Detected change in 'C:\\Users\\DJ\\Desktop\\ChildFocus\\backend\\tests\\test_heuristic.py', reloading
+[2026-03-09 13:47:12,678] INFO  * Restarting with stat
+[2026-03-09 13:47:14,343] WARNING  * Debugger is active!
+[2026-03-09 13:47:14,352] INFO  * Debugger PIN: 846-696-707
+[2026-03-09 13:47:18,679] INFO  * Detected change in 'C:\\Users\\DJ\\Desktop\\ChildFocus\\backend\\tests\\test_hybrid.py', reloading
+[2026-03-09 13:47:18,788] INFO  * Restarting with stat
+[2026-03-09 13:47:19,472] WARNING  * Debugger is active!
+[2026-03-09 13:47:19,478] INFO  * Debugger PIN: 846-696-707
+[2026-03-09 14:05:55,620] INFO CLASSIFY [FULL] video_id=dQw4w9WgXcQ label=Educational
+[2026-03-09 14:05:55,621] INFO 127.0.0.1 - - [09/Mar/2026 14:05:55] "POST /classify_full HTTP/1.1" 200 -
+[2026-03-09 14:08:29,547] INFO  * Detected change in 'C:\\Users\\DJ\\Desktop\\ChildFocus\\backend\\app\\modules\\frame_sampler.py', reloading
+[2026-03-09 14:08:30,609] INFO  * Restarting with stat
+[2026-03-09 14:08:36,863] WARNING  * Debugger is active!
+[2026-03-09 14:08:36,871] INFO  * Debugger PIN: 846-696-707
+[2026-03-09 14:09:15,316] INFO CLASSIFY [FULL] video_id=dQw4w9WgXcQ label=Educational
+[2026-03-09 14:09:15,317] INFO 127.0.0.1 - - [09/Mar/2026 14:09:15] "POST /classify_full HTTP/1.1" 200 -
+[2026-03-09 14:10:15,677] INFO CLASSIFY [FULL] video_id=dQw4w9WgXcQ label=Educational
+[2026-03-09 14:10:15,678] INFO 127.0.0.1 - - [09/Mar/2026 14:10:15] "POST /classify_full HTTP/1.1" 200 -
+[2026-03-09 14:16:18,282] INFO  * Detected change in 'C:\\Users\\DJ\\Desktop\\ChildFocus\\backend\\app\\routes\\classify.py', reloading
+[2026-03-09 14:16:18,947] INFO  * Restarting with stat

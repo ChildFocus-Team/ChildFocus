@@ -1,190 +1,169 @@
 """
-ChildFocus — Naïve Bayes Training Script
+ChildFocus - Naïve Bayes Training Script
 ml_training/scripts/train_nb.py
 
-What this does:
-  1. Reads metadata_labeled.csv from data/processed/
-  2. Vectorizes text using the fitted vectorizer.pkl
-  3. Trains a ComplementNB classifier (best for imbalanced text classes)
-  4. Evaluates on 30% hold-out test set (Accuracy, F1, Confusion Matrix)
-  5. Saves nb_model.pkl to ../../backend/app/models/
+Trains a Complement Naïve Bayes classifier on preprocessed metadata.
+ComplementNB handles class imbalance better than MultinomialNB — important
+since Overstimulating samples are fewer than Educational/Neutral.
 
-Target: F1 ≥ 0.70
+Pipeline:
+  1. Load data/processed/metadata_clean.csv
+  2. TF-IDF vectorization (unigrams + bigrams, max 5000 features)
+  3. 70/30 train/test split (per manuscript: 490 train / 210 test)
+  4. Train ComplementNB
+  5. Evaluate: Precision, Recall, F1-Score, Confusion Matrix
+  6. Save nb_model.pkl + vectorizer.pkl → outputs/
 
-Run from: ml_training/scripts/
-Command:   py train_nb.py
+Run:
+    python train_nb.py
 """
 
 import os
+import csv
 import pickle
-import sys
+import random
 
-print("[TRAIN_NB] ══════════════════════════════════════")
-print("[TRAIN_NB] ChildFocus — Naïve Bayes Training")
-print("[TRAIN_NB] ══════════════════════════════════════")
-
-# ── Try importing required packages ──────────────────────────────────────────
-try:
-    import pandas as pd
-    print("[TRAIN_NB] ✓ pandas loaded")
-except ImportError:
-    print("[TRAIN_NB] ✗ pandas not found. Run: pip install pandas")
-    sys.exit(1)
-
-try:
-    import numpy as np
-    from sklearn.naive_bayes     import ComplementNB
-    from sklearn.preprocessing   import LabelEncoder
-    from sklearn.model_selection import train_test_split
-    from sklearn.metrics         import (
-        accuracy_score, f1_score,
-        classification_report, confusion_matrix
-    )
-    print("[TRAIN_NB] ✓ scikit-learn loaded")
-except ImportError:
-    print("[TRAIN_NB] ✗ scikit-learn not found. Run: pip install scikit-learn")
-    sys.exit(1)
-
-# ── Paths ─────────────────────────────────────────────────────────────────────
-SCRIPT_DIR    = os.path.dirname(os.path.abspath(__file__))
-LABELED_CSV   = os.path.join(SCRIPT_DIR, "data", "processed", "metadata_labeled.csv")
-MODELS_DIR    = os.path.join(SCRIPT_DIR, "..", "..", "backend", "app", "models")
-VEC_PATH      = os.path.join(MODELS_DIR, "vectorizer.pkl")
-MODEL_PATH    = os.path.join(MODELS_DIR, "nb_model.pkl")
-OUTPUTS_DIR   = os.path.join(SCRIPT_DIR, "..", "outputs")
-
-print(f"\n[TRAIN_NB] Input  → {LABELED_CSV}")
-print(f"[TRAIN_NB] Model  → {MODEL_PATH}")
-
-# ── Check prerequisite files ──────────────────────────────────────────────────
-if not os.path.exists(LABELED_CSV):
-    print(f"\n[TRAIN_NB] ✗ ERROR: Labeled CSV not found.")
-    print(f"             Run preprocess.py first: py preprocess.py")
-    sys.exit(1)
-
-if not os.path.exists(VEC_PATH):
-    print(f"\n[TRAIN_NB] ✗ ERROR: vectorizer.pkl not found.")
-    print(f"             Run preprocess.py first: py preprocess.py")
-    sys.exit(1)
-
-# ── Load data ─────────────────────────────────────────────────────────────────
-print(f"\n[TRAIN_NB] Loading labeled dataset...")
-df = pd.read_csv(LABELED_CSV, encoding="utf-8")
-print(f"[TRAIN_NB] ✓ Loaded {len(df)} rows")
-
-required_cols = ["text_combined", "label"]
-for col in required_cols:
-    if col not in df.columns:
-        print(f"[TRAIN_NB] ✗ ERROR: Column '{col}' missing from CSV.")
-        print(f"             Found: {list(df.columns)}")
-        sys.exit(1)
-
-# Drop rows with empty text or label
-df = df.dropna(subset=["text_combined", "label"])
-df = df[df["text_combined"].str.strip().str.len() > 5]
-df = df[df["label"].str.strip().str.len() > 0]
-print(f"[TRAIN_NB] ✓ {len(df)} valid rows after cleaning")
-
-label_counts = df["label"].value_counts()
-print(f"\n[TRAIN_NB] Label distribution:")
-for label, count in label_counts.items():
-    print(f"           {label:20s} → {count} rows ({count/len(df)*100:.1f}%)")
-
-# ── Load vectorizer ───────────────────────────────────────────────────────────
-print(f"\n[TRAIN_NB] Loading vectorizer...")
-with open(VEC_PATH, "rb") as f:
-    vectorizer = pickle.load(f)
-print(f"[TRAIN_NB] ✓ Vectorizer loaded ({len(vectorizer.vocabulary_)} features)")
-
-# ── Encode labels ─────────────────────────────────────────────────────────────
-label_encoder = LabelEncoder()
-label_encoder.fit(["Educational", "Neutral", "Overstimulating"])
-y = label_encoder.transform(df["label"])
-classes = list(label_encoder.classes_)
-print(f"\n[TRAIN_NB] Label encoding: {dict(zip(classes, label_encoder.transform(classes)))}")
-
-# ── Vectorize text ────────────────────────────────────────────────────────────
-print(f"\n[TRAIN_NB] Vectorizing text...")
-X = vectorizer.transform(df["text_combined"])
-print(f"[TRAIN_NB] ✓ Feature matrix: {X.shape[0]} samples × {X.shape[1]} features")
-
-# ── Train / Test split (70/30) ────────────────────────────────────────────────
-print(f"\n[TRAIN_NB] Splitting dataset (70% train / 30% test)...")
-X_train, X_test, y_train, y_test = train_test_split(
-    X, y,
-    test_size    = 0.30,
-    random_state = 42,
-    stratify     = y,          # preserve class proportions
+import numpy as np
+from sklearn.naive_bayes import ComplementNB
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import (
+    classification_report,
+    confusion_matrix,
+    precision_recall_fscore_support,
 )
-print(f"[TRAIN_NB] ✓ Train: {X_train.shape[0]} samples | Test: {X_test.shape[0]} samples")
 
-# ── Train ComplementNB ────────────────────────────────────────────────────────
-print(f"\n[TRAIN_NB] Training ComplementNB classifier...")
-model = ComplementNB(alpha=0.5)   # alpha=0.5 is smoother than default 1.0
-model.fit(X_train, y_train)
-print(f"[TRAIN_NB] ✓ Training complete")
+# ── Paths ──────────────────────────────────────────────────────────────────────
+PROCESSED_PATH  = "data/processed/metadata_clean.csv"
+OUTPUTS_DIR     = "../outputs"
+MODEL_PATH      = os.path.join(OUTPUTS_DIR, "nb_model.pkl")
+VECTORIZER_PATH = os.path.join(OUTPUTS_DIR, "vectorizer.pkl")
 
-# ── Evaluate ──────────────────────────────────────────────────────────────────
-print(f"\n[TRAIN_NB] ── Evaluation Results ──────────────────")
-y_pred = model.predict(X_test)
+# ── Reproducibility ────────────────────────────────────────────────────────────
+RANDOM_STATE = 42
+random.seed(RANDOM_STATE)
+np.random.seed(RANDOM_STATE)
 
-accuracy = accuracy_score(y_test, y_pred)
-f1_macro = f1_score(y_test, y_pred, average="macro")
-f1_weighted = f1_score(y_test, y_pred, average="weighted")
+# ── Label order (must stay consistent with naive_bayes.py) ────────────────────
+LABELS = ["Educational", "Neutral", "Overstimulating"]
 
-print(f"[TRAIN_NB] Accuracy    : {accuracy:.4f} ({accuracy*100:.1f}%)")
-print(f"[TRAIN_NB] F1 (macro)  : {f1_macro:.4f}")
-print(f"[TRAIN_NB] F1 (weighted): {f1_weighted:.4f}")
 
-print(f"\n[TRAIN_NB] Classification Report:")
-print(classification_report(y_test, y_pred, target_names=classes))
+def load_data(path: str):
+    texts, labels = [], []
+    with open(path, encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            text  = row.get("text", "").strip()
+            label = row.get("label", "").strip()
+            if text and label in LABELS:
+                texts.append(text)
+                labels.append(label)
+    return texts, labels
 
-print(f"[TRAIN_NB] Confusion Matrix (rows=actual, cols=predicted):")
-cm = confusion_matrix(y_test, y_pred)
-print(f"           Labels: {classes}")
-for i, row in enumerate(cm):
-    print(f"           {classes[i]:20s}: {row}")
 
-# ── F1 threshold check ────────────────────────────────────────────────────────
-TARGET_F1 = 0.70
-if f1_macro >= TARGET_F1:
-    print(f"\n[TRAIN_NB] ✓ F1 {f1_macro:.4f} ≥ {TARGET_F1} — TARGET MET ✅")
-else:
-    print(f"\n[TRAIN_NB] ⚠ F1 {f1_macro:.4f} < {TARGET_F1} — below target")
-    print(f"           This is acceptable given 500 rows. Will improve in Sprint 3.")
+def train():
+    os.makedirs(OUTPUTS_DIR, exist_ok=True)
 
-# ── Save model ────────────────────────────────────────────────────────────────
-os.makedirs(MODELS_DIR, exist_ok=True)
-os.makedirs(OUTPUTS_DIR, exist_ok=True)
+    # ── Load ───────────────────────────────────────────────────────────────────
+    print("[TRAIN] Loading processed data...")
+    texts, labels = load_data(PROCESSED_PATH)
+    print(f"[TRAIN] {len(texts)} samples loaded")
 
-model_bundle = {
-    "model":         model,
-    "label_encoder": label_encoder,
-    "label_names":   classes,
-    "metrics": {
-        "accuracy":    round(float(accuracy), 4),
-        "f1_macro":    round(float(f1_macro), 4),
-        "f1_weighted": round(float(f1_weighted), 4),
-        "train_size":  X_train.shape[0],
-        "test_size":   X_test.shape[0],
-        "features":    X.shape[1],
-    }
-}
+    if len(texts) < 10:
+        print("[TRAIN] ✗ Not enough data. Run preprocess.py first.")
+        return
 
-with open(MODEL_PATH, "wb") as f:
-    pickle.dump(model_bundle, f)
-print(f"\n[TRAIN_NB] ✓ nb_model.pkl saved  → {MODEL_PATH}")
+    # Label distribution
+    for lbl in LABELS:
+        count = labels.count(lbl)
+        print(f"[TRAIN]   {lbl}: {count} ({count/len(labels)*100:.1f}%)")
 
-# Also save a copy to ml_training/outputs/
-outputs_model = os.path.join(OUTPUTS_DIR, "nb_model.pkl")
-outputs_vec   = os.path.join(OUTPUTS_DIR, "vectorizer.pkl")
-with open(outputs_model, "wb") as f:
-    pickle.dump(model_bundle, f)
-with open(outputs_vec, "wb") as f:
-    pickle.dump(vectorizer, f)
-print(f"[TRAIN_NB] ✓ Backup copy saved   → {outputs_model}")
+    # ── Oversample Overstimulating to balance training data ───────────────────
+    # ComplementNB doesn't support class_weight directly.
+    # Oversampling minority class makes model more sensitive to catching
+    # overstimulating content — critical for a child safety system.
+    from sklearn.utils import resample
 
-print(f"\n[TRAIN_NB] ══════════════════════════════════════")
-print(f"[TRAIN_NB] DONE. Both .pkl files are ready.")
-print(f"[TRAIN_NB] Next step: cd ../../backend && py -m pytest tests/ -v")
-print(f"[TRAIN_NB] ══════════════════════════════════════\n")
+    neutral_count = labels.count("Neutral")
+    texts_over    = [t for t, l in zip(texts, labels) if l == "Overstimulating"]
+    labels_over   = [l for l in labels if l == "Overstimulating"]
+
+    if len(texts_over) < neutral_count:
+        texts_over_up, labels_over_up = resample(
+            texts_over, labels_over,
+            n_samples=neutral_count,
+            random_state=RANDOM_STATE,
+        )
+        texts  = texts  + texts_over_up
+        labels = labels + labels_over_up
+        print(f"[TRAIN] Oversampled Overstimulating: {len(texts_over)} → {neutral_count}")
+
+    # ── Split 70/30 (per manuscript) ───────────────────────────────────────────
+    X_train, X_test, y_train, y_test = train_test_split(
+        texts, labels,
+        test_size=0.30,
+        random_state=RANDOM_STATE,
+        stratify=labels,
+    )
+    print(f"\n[TRAIN] Split: {len(X_train)} train / {len(X_test)} test")
+
+    # ── TF-IDF Vectorization ───────────────────────────────────────────────────
+    print("[TRAIN] Fitting TF-IDF vectorizer...")
+    vectorizer = TfidfVectorizer(
+        ngram_range=(1, 2),     # unigrams + bigrams
+        max_features=5000,      # top 5000 terms
+        sublinear_tf=True,      # log(1 + tf) — reduces impact of very frequent terms
+        min_df=2,               # ignore terms appearing in only 1 document
+        strip_accents="unicode",
+    )
+    X_train_vec = vectorizer.fit_transform(X_train)
+    X_test_vec  = vectorizer.transform(X_test)
+    print(f"[TRAIN] Vocabulary size: {len(vectorizer.vocabulary_)}")
+
+    # ── Train ComplementNB ─────────────────────────────────────────────────────
+    print("[TRAIN] Training ComplementNB...")
+    model = ComplementNB(alpha=0.1)   # alpha=0.1 (lighter smoothing for sparse text)
+    model.fit(X_train_vec, y_train)
+
+    # ── Evaluate ───────────────────────────────────────────────────────────────
+    print("\n[TRAIN] ══════════════════════════════════════")
+    print("[TRAIN] EVALUATION RESULTS")
+    print("[TRAIN] ══════════════════════════════════════")
+
+    y_pred = model.predict(X_test_vec)
+
+    # Per-class Precision / Recall / F1
+    print("\n[TRAIN] Classification Report:")
+    print(classification_report(y_test, y_pred, target_names=LABELS, digits=4))
+
+    # Confusion Matrix
+    cm = confusion_matrix(y_test, y_pred, labels=LABELS)
+    print("[TRAIN] Confusion Matrix:")
+    print(f"{'':>20}", "  ".join(f"{l[:5]:>5}" for l in LABELS))
+    for i, row_label in enumerate(LABELS):
+        print(f"{row_label:>20}", "  ".join(f"{cm[i][j]:>5}" for j in range(len(LABELS))))
+
+    # Overall metrics
+    prec, rec, f1, _ = precision_recall_fscore_support(
+        y_test, y_pred, average="weighted"
+    )
+    accuracy = np.mean(np.array(y_pred) == np.array(y_test))
+    print(f"\n[TRAIN] Overall Accuracy : {accuracy:.4f} ({accuracy*100:.2f}%)")
+    print(f"[TRAIN] Weighted Precision: {prec:.4f}")
+    print(f"[TRAIN] Weighted Recall   : {rec:.4f}")
+    print(f"[TRAIN] Weighted F1-Score : {f1:.4f}")
+    print("[TRAIN] ══════════════════════════════════════\n")
+
+    # ── Save model + vectorizer ────────────────────────────────────────────────
+    with open(MODEL_PATH, "wb") as f:
+        pickle.dump(model, f)
+    with open(VECTORIZER_PATH, "wb") as f:
+        pickle.dump(vectorizer, f)
+
+    print(f"[TRAIN] ✓ Model saved     → {MODEL_PATH}")
+    print(f"[TRAIN] ✓ Vectorizer saved → {VECTORIZER_PATH}")
+    print(f"[TRAIN] ✓ Classes: {model.classes_}")
+    print(f"[TRAIN] Sprint 2 training complete.")
+
+
+if __name__ == "__main__":
+    train()
