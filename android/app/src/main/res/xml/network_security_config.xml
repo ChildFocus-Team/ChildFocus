@@ -1,6 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
 <network-security-config>
+
+    <!-- Emulator: 10.0.2.2 routes to the host machine -->
     <domain-config cleartextTrafficPermitted="true">
         <domain includeSubdomains="true">192.168.100.13</domain>
     </domain-config>
+<<<<<<< Updated upstream
+=======
+
+    <!--
+        Physical device: replace 192.168.1.XXX with your machine LAN IP.
+        Run ipconfig (Windows) or ifconfig (Mac/Linux) to find it.
+        Also update NetworkConfig.kt BASE_URL to match.
+    -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">192.168.1.XXX</domain>
+    </domain-config>
+
+>>>>>>> Stashed changes
 </network-security-config>

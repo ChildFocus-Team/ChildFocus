@@ -9,9 +9,15 @@ Optimizations:
   4. Frame resize 320px   → faster numpy ops on smaller frames
   5. Runtime timer        → printed on completion + returned in response
   6. Short video fix      → segments deduplicated for videos < 20s (e.g. Shorts)
+
+Fix (sprint-3):
+  - sample_video() now accepts either a bare video ID OR a full YouTube URL.
+    Previously, passing a full URL caused fetch_video() to construct a double
+    URL: https://www.youtube.com/watch?v=https://www.youtube.com/watch?v=...
 """
 
 import os
+import re
 import time
 import warnings
 import cv2
@@ -52,6 +58,21 @@ S_MAX             = 128.0
 FRAME_WIDTH       = 320
 NODE_PATH         = r"C:\Program Files\nodejs\node.exe"
 
+# Regex to extract an 11-char YouTube video ID from any URL format
+_VIDEO_ID_RE = re.compile(r"(?:v=|youtu\.be/|shorts/)([a-zA-Z0-9_-]{11})")
+
+
+def _extract_video_id(video_id_or_url: str) -> str:
+    """
+    Return a bare 11-character video ID regardless of whether the input is
+    already a bare ID or a full YouTube URL (watch, youtu.be, shorts).
+    """
+    match = _VIDEO_ID_RE.search(video_id_or_url)
+    if match:
+        return match.group(1)
+    # Already a bare ID (or unrecognised — pass through and let yt-dlp fail)
+    return video_id_or_url.strip()
+
 
 # ── yt-dlp shared options ──────────────────────────────────────────────────────
 def _ydl_opts(extra: dict = None) -> dict:
@@ -86,7 +107,7 @@ def _ydl_opts(extra: dict = None) -> dict:
 def fetch_video(video_id: str, max_duration: int = 90) -> dict:
     """
     Single yt-dlp call — validates availability AND downloads.
-    Previous version made two separate calls (validate then download) = wasted ~8-15s.
+    Expects a BARE 11-character video ID (not a full URL).
     """
     if not YTDLP_AVAILABLE:
         return {"ok": False, "reason": "yt-dlp not installed"}
@@ -290,9 +311,17 @@ def _process_segment(
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
-def sample_video(video_id: str, thumbnail_url: str = "") -> dict:
+def sample_video(video_id_or_url: str, thumbnail_url: str = "") -> dict:
+    """
+    Accepts either a bare 11-char video ID OR a full YouTube URL.
+    The video ID is extracted before being passed to fetch_video() to prevent
+    double-URL construction errors.
+    """
     t_start    = time.time()
     video_path = None
+
+    # ── Normalise input: always work with a bare video ID ─────────────────────
+    video_id = _extract_video_id(video_id_or_url)
 
     try:
         print(f"\n[SAMPLER] ══════════════════════════════════════")
@@ -306,9 +335,14 @@ def sample_video(video_id: str, thumbnail_url: str = "") -> dict:
         if not result["ok"]:
             print(f"[SAMPLER] ✗ {result['reason']}")
             return {
-                "video_id": video_id, "status": "unavailable",
+                "video_id": video_id,
+                "status":   "unavailable",
                 "reason":   result["reason"],
                 "message":  f"Video cannot be analyzed: {result['reason']}",
+                # Return empty-but-valid metadata fields so NB can still run
+                "title":       "",
+                "tags":        [],
+                "description": "",
             }
 
         video_path     = result["path"]
@@ -321,19 +355,13 @@ def sample_video(video_id: str, thumbnail_url: str = "") -> dict:
         actual_dur = min(video_duration, 90)
 
         if actual_dur <= SEGMENT_DURATION:
-            # Video shorter than one segment (e.g. Shorts < 20s)
             effective_seg_dur = max(1, int(actual_dur))
-            seg_starts = [
-                ("S1", 0),
-                ("S2", 0),
-                ("S3", 0),
-            ]
+            seg_starts = [("S1", 0), ("S2", 0), ("S3", 0)]
         else:
             effective_seg_dur = SEGMENT_DURATION
             mid = max(0, int(actual_dur / 2) - effective_seg_dur // 2)
             end = max(0, int(actual_dur) - effective_seg_dur)
 
-            # Deduplicate segment starts
             seen = []
             for v in [0, mid, end]:
                 if v not in seen:
@@ -381,6 +409,9 @@ def sample_video(video_id: str, thumbnail_url: str = "") -> dict:
         return {
             "video_id":                  video_id,
             "video_title":               result.get("title", ""),
+            "title":                     result.get("title", ""),
+            "tags":                      [],
+            "description":               "",
             "video_duration_sec":        round(video_duration, 1),
             "thumbnail_url":             thumbnail_url,
             "thumbnail_intensity":       thumb,
@@ -394,7 +425,14 @@ def sample_video(video_id: str, thumbnail_url: str = "") -> dict:
     except Exception as e:
         print(f"[SAMPLER] ✗ Fatal: {e}")
         import traceback; traceback.print_exc()
-        return {"video_id": video_id, "status": "error", "message": str(e)}
+        return {
+            "video_id":    video_id,
+            "status":      "error",
+            "message":     str(e),
+            "title":       "",
+            "tags":        [],
+            "description": "",
+        }
     finally:
         if video_path and os.path.exists(video_path):
             try: os.remove(video_path)
