@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    ChildFocus Accessibility Service Configuration
+    Location: android/app/src/main/res/xml/accessibility_service_config.xml
+
+    Event types:
+      typeWindowStateChanged   — new screen/activity opens (regular video player)
+      typeWindowContentChanged — content updates within window (title/metadata)
+      typeViewScrolled         — user scrolls or swipes (Shorts swipe between videos)
+      typeViewFocused          — focus moves between views (Shorts title gaining focus)
+      typeViewTextChanged      — text content changes in a view (Shorts title populating)
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowContentChanged|typeViewScrolled|typeViewFocused|typeViewTextChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:packageNames="com.google.android.youtube"
+    android:canRetrieveWindowContent="true"
+    android:notificationTimeout="100"
+    android:settingsActivity="com.childfocus.MainActivity"
+    android:description="@string/accessibility_description" />

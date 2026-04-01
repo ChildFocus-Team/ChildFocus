@@ -1,0 +1,91 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Full-screen blocked website overlay.
+    Shown whenever the accessibility service detects a restricted URL.
+    Dark navy background with red alert accents — clearly communicates "access denied".
+-->
+<LinearLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:gravity="center"
+    android:background="#0D1B2A"
+    android:padding="32dp">
+
+    <!-- Shield icon -->
+    <ImageView
+        android:layout_width="88dp"
+        android:layout_height="88dp"
+        android:src="@drawable/ic_childfocus_shield"
+        android:tint="#E63946"
+        android:contentDescription="Blocked" />
+
+    <Space android:layout_width="wrap_content" android:layout_height="24dp" />
+
+    <!-- "Site Blocked" title -->
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Site Blocked"
+        android:textColor="#F0F4F8"
+        android:textSize="28sp"
+        android:textStyle="bold"
+        android:gravity="center" />
+
+    <Space android:layout_width="wrap_content" android:layout_height="12dp" />
+
+    <!-- Subtitle -->
+    <TextView
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="This website has been restricted\nby your parent or guardian."
+        android:textColor="#8BA3B8"
+        android:textSize="15sp"
+        android:gravity="center"
+        android:lineSpacingMultiplier="1.4" />
+
+    <Space android:layout_width="wrap_content" android:layout_height="28dp" />
+
+    <!-- Blocked URL pill -->
+    <TextView
+        android:id="@+id/tv_blocked_url"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:background="@drawable/bg_url_pill"
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp"
+        android:paddingTop="8dp"
+        android:paddingBottom="8dp"
+        android:textColor="#E63946"
+        android:textSize="13sp"
+        android:fontFamily="monospace"
+        android:gravity="center"
+        android:maxLines="2"
+        android:ellipsize="middle"
+        android:layout_marginBottom="40dp" />
+
+    <!-- Go Home button -->
+    <Button
+        android:id="@+id/btn_go_home"
+        android:layout_width="260dp"
+        android:layout_height="52dp"
+        android:text="Go to Home Screen"
+        android:textColor="#0D1B2A"
+        android:textStyle="bold"
+        android:backgroundTint="#00C9A7"
+        android:stateListAnimator="@null" />
+
+    <Space android:layout_width="wrap_content" android:layout_height="12dp" />
+
+    <!-- Back button -->
+    <Button
+        android:id="@+id/btn_back"
+        android:layout_width="260dp"
+        android:layout_height="52dp"
+        android:text="Go Back"
+        android:textColor="#8BA3B8"
+        android:backgroundTint="#1B2D3E"
+        android:stateListAnimator="@null" />
+
+</LinearLayout>
