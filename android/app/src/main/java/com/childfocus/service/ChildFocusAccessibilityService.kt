@@ -133,7 +133,7 @@ class ChildFocusAccessibilityService : AccessibilityService() {
         Pattern.CASE_INSENSITIVE
     )
     private val AT_CHANNEL_PATTERN = Pattern.compile(
-        "([A-Z][^\\n@]{10,150})\\s{1,4}@[\\w]{2,50}(?:\\s|$)"
+        "([A-Z][^\\n@]{10,150})\\s{1,4}@([\\w]{2,50})(?:\\s|$)"
     )
     private val URL_PATTERN = Pattern.compile(
         "(?:v=|youtu\\.be/|shorts/)([a-zA-Z0-9_-]{11})"

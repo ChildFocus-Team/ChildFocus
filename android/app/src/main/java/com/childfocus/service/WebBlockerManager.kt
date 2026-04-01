@@ -2,86 +2,108 @@ package com.childfocus.service
 
 import android.content.Context
 import android.content.SharedPreferences
+import androidx.core.content.edit
 
 /**
- * Manages the list of blocked websites using SharedPreferences.
- * Provides thread-safe access to the blocked sites list.
+ * Manages the blocked sites list with full persistence via SharedPreferences.
+ *
+ * Crash-proof design:
+ * - No lateinit — nullable prefs with safe fallbacks everywhere.
+ * - init() is idempotent (safe to call multiple times from any component).
+ * - Handles migration: if the old version stored blocked_sites as a String
+ *   instead of a Set<String>, the bad value is wiped and we start fresh.
  */
 object WebBlockerManager {
 
-    private const val PREFS_NAME = "web_blocker_prefs"
+    private const val PREFS_NAME        = "web_blocker_prefs"
     private const val KEY_BLOCKED_SITES = "blocked_sites"
-    private const val KEY_BLOCKER_ENABLED = "blocker_enabled"
-    private const val DELIMITER = "|||"
+    private const val KEY_ENABLED       = "blocker_enabled"
 
-    private fun getPrefs(context: Context): SharedPreferences =
-        context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+    private var prefs: SharedPreferences? = null
+    private val cache = mutableSetOf<String>()
+    private var cacheLoaded = false
 
-    /** Returns all blocked site patterns (lowercased, trimmed). */
-    fun getBlockedSites(context: Context): Set<String> {
-        val raw = getPrefs(context).getString(KEY_BLOCKED_SITES, "") ?: ""
-        if (raw.isBlank()) return emptySet()
-        return raw.split(DELIMITER)
-            .map { it.trim().lowercase() }
-            .filter { it.isNotEmpty() }
-            .toSet()
+    // -------------------------------------------------------------------------
+    // Initialisation — idempotent, safe to call from multiple entry points
+    // -------------------------------------------------------------------------
+
+    fun init(context: Context) {
+        if (prefs != null) return
+        prefs = context.applicationContext
+            .getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        loadCache()
     }
 
-    /** Adds a site to the blocked list. Returns false if already present. */
-    fun addSite(context: Context, site: String): Boolean {
-        val cleaned = cleanSite(site)
-        if (cleaned.isBlank()) return false
-        val current = getBlockedSites(context).toMutableSet()
-        if (current.contains(cleaned)) return false
-        current.add(cleaned)
-        saveSites(context, current)
-        return true
-    }
-
-    /** Removes a site from the blocked list. */
-    fun removeSite(context: Context, site: String) {
-        val cleaned = cleanSite(site)
-        val current = getBlockedSites(context).toMutableSet()
-        current.remove(cleaned)
-        saveSites(context, current)
-    }
-
-    /** Replaces entire blocked list. */
-    fun setSites(context: Context, sites: Set<String>) {
-        val cleaned = sites.map { cleanSite(it) }.filter { it.isNotEmpty() }.toSet()
-        saveSites(context, cleaned)
-    }
-
-    fun isEnabled(context: Context): Boolean =
-        getPrefs(context).getBoolean(KEY_BLOCKER_ENABLED, true)
-
-    fun setEnabled(context: Context, enabled: Boolean) {
-        getPrefs(context).edit().putBoolean(KEY_BLOCKER_ENABLED, enabled).apply()
-    }
-
-    /**
-     * Checks whether a given URL/window title matches any blocked site pattern.
-     * Matches on domain, subdomain, or keyword presence.
-     */
-    fun isBlocked(context: Context, urlOrTitle: String): Boolean {
-        if (!isEnabled(context)) return false
-        val lower = urlOrTitle.lowercase()
-        return getBlockedSites(context).any { pattern ->
-            lower.contains(pattern)
+    private fun loadCache() {
+        if (cacheLoaded) return
+        cache.clear()
+        try {
+            // New format: Set<String>
+            cache.addAll(
+                prefs?.getStringSet(KEY_BLOCKED_SITES, emptySet()) ?: emptySet()
+            )
+        } catch (e: ClassCastException) {
+            // Old format stored the value as a plain String — wipe it and
+            // start fresh so the app no longer crashes on launch.
+            prefs?.edit { remove(KEY_BLOCKED_SITES) }
         }
+        cacheLoaded = true
     }
 
-    private fun saveSites(context: Context, sites: Set<String>) {
-        getPrefs(context).edit()
-            .putString(KEY_BLOCKED_SITES, sites.joinToString(DELIMITER))
-            .apply()
+    // -------------------------------------------------------------------------
+    // Enable / disable toggle
+    // -------------------------------------------------------------------------
+
+    var isEnabled: Boolean
+        get() = prefs?.getBoolean(KEY_ENABLED, true) ?: true
+        set(value) { prefs?.edit { putBoolean(KEY_ENABLED, value) } }
+
+    // -------------------------------------------------------------------------
+    // Blocked sites management
+    // -------------------------------------------------------------------------
+
+    fun getBlockedSites(): Set<String> = cache.toSet()
+
+    fun addSite(rawUrl: String) {
+        val domain = normalise(rawUrl)
+        if (domain.isNotEmpty() && cache.add(domain)) persist()
     }
 
-    private fun cleanSite(site: String): String {
-        return site.trim().lowercase()
-            .removePrefix("https://")
-            .removePrefix("http://")
-            .removePrefix("www.")
-            .trimEnd('/')
+    fun removeSite(rawUrl: String) {
+        if (cache.remove(normalise(rawUrl))) persist()
     }
+
+    fun clearAll() {
+        cache.clear()
+        persist()
+    }
+
+    // -------------------------------------------------------------------------
+    // Blocking check
+    // -------------------------------------------------------------------------
+
+    fun isBlocked(url: String): Boolean {
+        if (!isEnabled) return false
+        val host = normalise(url)
+        return cache.any { blocked -> host == blocked || host.endsWith(".$blocked") }
+    }
+
+    // -------------------------------------------------------------------------
+    // Helpers
+    // -------------------------------------------------------------------------
+
+    private fun persist() {
+        prefs?.edit { putStringSet(KEY_BLOCKED_SITES, cache.toSet()) }
+    }
+
+    fun normalise(raw: String): String = raw
+        .trim()
+        .lowercase()
+        .removePrefix("https://")
+        .removePrefix("http://")
+        .removePrefix("www.")
+        .substringBefore("/")
+        .substringBefore("?")
+        .substringBefore("#")
+        .trim()
 }

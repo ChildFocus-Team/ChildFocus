@@ -200,8 +200,11 @@ private fun PinGateScreen(storedPin: String, onPinCorrect: () -> Unit) {
 @Composable
 private fun WebBlockerDashboard(onLock: () -> Unit) {
     val context      = LocalContext.current
-    var blockedSites by remember { mutableStateOf(WebBlockerManager.getBlockedSites(context).toList().sorted()) }
-    var isEnabled    by remember { mutableStateOf(WebBlockerManager.isEnabled(context)) }
+    // Safety net: init here too in case ChildFocusApp.onCreate() did not run first
+    WebBlockerManager.init(context)
+
+    var blockedSites by remember { mutableStateOf(WebBlockerManager.getBlockedSites().toList().sorted()) }
+    var isEnabled    by remember { mutableStateOf(WebBlockerManager.isEnabled) }
     var newSite      by remember { mutableStateOf("") }
     var showPinDialog by remember { mutableStateOf(false) }
     var serviceOn    by remember { mutableStateOf(isWebBlockerServiceEnabled(context)) }
@@ -210,7 +213,7 @@ private fun WebBlockerDashboard(onLock: () -> Unit) {
     val focusManager   = LocalFocusManager.current
 
     fun refresh() {
-        blockedSites = WebBlockerManager.getBlockedSites(context).toList().sorted()
+        blockedSites = WebBlockerManager.getBlockedSites().toList().sorted()
     }
 
     // Poll service status every 2 seconds so banner updates when user enables it
@@ -269,7 +272,7 @@ private fun WebBlockerDashboard(onLock: () -> Unit) {
                         checked         = isEnabled,
                         onCheckedChange = {
                             isEnabled = it
-                            WebBlockerManager.setEnabled(context, it)
+                            WebBlockerManager.isEnabled = it
                         },
                         colors = SwitchDefaults.colors(
                             checkedThumbColor       = Teal,
@@ -375,7 +378,7 @@ private fun WebBlockerDashboard(onLock: () -> Unit) {
                         ),
                         keyboardActions   = KeyboardActions(onDone = {
                             if (newSite.isNotBlank()) {
-                                WebBlockerManager.addSite(context, newSite.trim())
+                                WebBlockerManager.addSite(newSite.trim())
                                 newSite = ""
                                 focusManager.clearFocus()
                                 refresh()
@@ -395,7 +398,7 @@ private fun WebBlockerDashboard(onLock: () -> Unit) {
                     Button(
                         onClick = {
                             if (newSite.isNotBlank()) {
-                                WebBlockerManager.addSite(context, newSite.trim())
+                                WebBlockerManager.addSite(newSite.trim())
                                 newSite = ""
                                 focusManager.clearFocus()
                                 refresh()
@@ -421,7 +424,7 @@ private fun WebBlockerDashboard(onLock: () -> Unit) {
                             row.forEach { preset ->
                                 PresetChip(
                                     preset   = preset,
-                                    onClick  = { preset.domains.forEach { WebBlockerManager.addSite(context, it) }; refresh() },
+                                    onClick  = { preset.domains.forEach { WebBlockerManager.addSite(it) }; refresh() },
                                     modifier = Modifier.weight(1f)
                                 )
                             }
@@ -445,7 +448,7 @@ private fun WebBlockerDashboard(onLock: () -> Unit) {
                     }
                     if (blockedSites.isNotEmpty()) {
                         Spacer(Modifier.weight(1f))
-                        TextButton(onClick = { WebBlockerManager.setSites(context, emptySet()); refresh() }) {
+                        TextButton(onClick = { WebBlockerManager.clearAll(); refresh() }) {
                             Text("Clear All", color = RedAlert, fontSize = 12.sp)
                         }
                     }
@@ -466,7 +469,7 @@ private fun WebBlockerDashboard(onLock: () -> Unit) {
                 }
             } else {
                 items(blockedSites, key = { it }) { site ->
-                    BlockedSiteRow(site = site, onRemove = { WebBlockerManager.removeSite(context, site); refresh() })
+                    BlockedSiteRow(site = site, onRemove = { WebBlockerManager.removeSite(site); refresh() })
                 }
             }
         }
