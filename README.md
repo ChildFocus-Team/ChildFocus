@@ -29,14 +29,12 @@ content from an Android app.
 
 ## Screenshots
 
-_Add screenshots of the app here — drop image files into the `docs/` folder and reference
-them below, e.g.:_
+_Add screenshots of the app here — drop image files into the `docs/` folder using the
+filenames below (or update the paths to match your own filenames):_
 
-```markdown
-| Landing | Result | Safety Mode | Screen Time |
-|---|---|---|---|
-| ![Landing](docs/landing.jpg) | ![Result](docs/result.jpg) | ![Safety Mode](docs/safety_mode.jpg) | ![Screen Time](docs/screen_time.jpg) |
-```
+| Landing Page | Screen Time | Web Blocker |
+|---|---|---|
+| ![Landing Page](docs/landingpage.jpg) | ![Screen Time](docs/screentime.jpg) | ![Web Blocker](docs/weblocker.jpg) |
 
 Suggested screens to capture, based on `android/app/src/main/java/com/childfocus/ui/`:
 `LandingScreen`, `ResultScreen`, `SafetyModeScreen`, `ScreenTimeScreen`, `WebBlockerScreen`,
