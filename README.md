@@ -29,16 +29,13 @@ content from an Android app.
 
 ## Screenshots
 
-_Add screenshots of the app here — drop image files into the `docs/` folder using the
-filenames below (or update the paths to match your own filenames):_
+
 
 | Landing Page | Result | Screen Time | Web Blocker |
 |---|---|---|---|
 | ![Landing Page](docs/landingpage.jpg) | ![Result](docs/result.jpg) | ![Screen Time](docs/screentime.jpg) | ![Web Blocker](docs/weblocker.jpg) |
 
-Suggested screens to capture, based on `android/app/src/main/java/com/childfocus/ui/`:
-`LandingScreen`, `ResultScreen`, `SafetyModeScreen`, `ScreenTimeScreen`, `WebBlockerScreen`,
-`SettingsScreen`.
+
 
 ## Project structure
 
