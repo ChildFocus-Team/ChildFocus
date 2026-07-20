@@ -35,7 +35,7 @@ them below, e.g.:_
 ```markdown
 | Landing | Result | Safety Mode | Screen Time |
 |---|---|---|---|
-| ![Landing](docs/landing.png) | ![Result](docs/result.png) | ![Safety Mode](docs/safety_mode.png) | ![Screen Time](docs/screen_time.png) |
+| ![Landing](docs/landing.jpg) | ![Result](docs/result.jpg) | ![Safety Mode](docs/safety_mode.jpg) | ![Screen Time](docs/screen_time.jpg) |
 ```
 
 Suggested screens to capture, based on `android/app/src/main/java/com/childfocus/ui/`:
