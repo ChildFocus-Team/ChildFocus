@@ -6,6 +6,42 @@ video analysis (frame-change rate, color-saturation variance, audio tempo transi
 Naive Bayes metadata classifier, then lets parents block, blur, or get alerted on flagged
 content from an Android app.
 
+## Features
+
+- **Fast metadata classification** — a Naive Bayes model scores a video from its title,
+  description, and tags in ~1-2 seconds, before any video is downloaded.
+- **Full hybrid analysis** — for uncertain cases, the backend downloads the video and runs a
+  3-segment heuristic pass (frame-change rate, color-saturation variance, audio tempo
+  transitions) fused with the NB score for a final Educational / Neutral / Overstimulating
+  label.
+- **Result screen** — shows the video's score and label to the parent, color-coded against
+  the same thresholds the backend used to decide (red/amber/green).
+- **Safety Mode** — a lock-in mode that restricts the child's device to approved content
+  until a parent unlocks it.
+- **Screen time controls** — per-app time limits with usage tracking, so parents can cap how
+  long specific apps are used.
+- **Web blocker** — an accessibility-service-based blocker that can restrict access to
+  specific sites/keywords in the device browser.
+- **Settings** — parent-configurable block threshold, alert email, and screen-time limit
+  (stored per-user as `parent_settings` JSON).
+- **Firebase-authenticated parent accounts** — no passwords stored in this codebase; see
+  [Authentication](#authentication) below.
+
+## Screenshots
+
+_Add screenshots of the app here — drop image files into a `docs/screenshots/` folder and
+reference them below, e.g.:_
+
+```markdown
+| Landing | Result | Safety Mode | Screen Time |
+|---|---|---|---|
+| ![Landing](docs/screenshots/landing.png) | ![Result](docs/screenshots/result.png) | ![Safety Mode](docs/screenshots/safety_mode.png) | ![Screen Time](docs/screenshots/screen_time.png) |
+```
+
+Suggested screens to capture, based on `android/app/src/main/java/com/childfocus/ui/`:
+`LandingScreen`, `ResultScreen`, `SafetyModeScreen`, `ScreenTimeScreen`, `WebBlockerScreen`,
+`SettingsScreen`.
+
 ## Project structure
 
 ```
