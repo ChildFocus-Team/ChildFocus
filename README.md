@@ -34,7 +34,7 @@ filenames below (or update the paths to match your own filenames):_
 
 | Landing Page | Result | Safety Mode | Screen Time | Web Blocker |
 |---|---|---|---|---|
-| ![Landing Page](docs/landingpage.jpg) | ![Result](docs/result.jpg) | ![Safety Mode](docs/safety_mode.jpg) | ![Screen Time](docs/screentime.jpg) | ![Web Blocker](docs/weblocker.jpg) |
+| ![Landing Page](docs/landingpage.jpg) | ![Result](docs/result.jpg) |  ![Screen Time](docs/screentime.jpg) | ![Web Blocker](docs/weblocker.jpg) |
 
 Suggested screens to capture, based on `android/app/src/main/java/com/childfocus/ui/`:
 `LandingScreen`, `ResultScreen`, `SafetyModeScreen`, `ScreenTimeScreen`, `WebBlockerScreen`,
